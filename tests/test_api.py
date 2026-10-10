@@ -316,12 +316,7 @@ class TestFileInfo:
         response = await client.get("/api/files/nonexistent/")
         assert response.status_code == 404
 
-    @pytest.mark.asyncio
-    async def test_list_files_empty(self, client):
-        """Listing files when none exist should return empty list."""
-        response = await client.get("/api/files/")
-        assert response.status_code == 200
-        assert response.json() == []
+
 
 
 class TestMeasurementsEndpoint:
@@ -445,35 +440,7 @@ class TestEndToEndProcessing:
         assert meas_data["features"][0]["area_sq_meters"] is not None
         assert meas_data["features"][0]["area_sq_meters"] > 0
 
-    @pytest.mark.asyncio
-    async def test_delete_file(self, client):
-        """DELETE /api/files/{id}/ removes file and cascades to features."""
-        import asyncio
 
-        kml_content = _create_test_kml([
-            {"name": "Delete Me", "type": "Point", "coordinates": "77.0,28.0,0"}
-        ])
-        upload_res = await client.post(
-            "/api/files/",
-            files={"file": ("to_delete.kml", kml_content, "application/vnd.google-earth.kml+xml")},
-        )
-        file_id = upload_res.json()["id"]
-
-        # Wait for processing
-        for _ in range(20):
-            await asyncio.sleep(0.1)
-            if (await client.get(f"/api/files/{file_id}/")).json()["status"] in ("COMPLETED", "FAILED"):
-                break
-
-        # Delete file
-        del_res = await client.delete(f"/api/files/{file_id}/")
-        assert del_res.status_code == 204
-
-        # Confirm 404
-        get_res = await client.get(f"/api/files/{file_id}/")
-        assert get_res.status_code == 404
-        meas_res = await client.get(f"/api/files/{file_id}/measurements/")
-        assert meas_res.status_code == 404
 
 
 class TestAdditionalGeometryCalculations:

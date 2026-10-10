@@ -139,10 +139,8 @@ http://localhost:8000
 | Method   | Endpoint                        | Description                      |
 |----------|---------------------------------|----------------------------------|
 | `POST`   | `/api/files/`                   | Upload a geospatial file         |
-| `GET`    | `/api/files/`                   | List all uploaded files          |
 | `GET`    | `/api/files/{id}/`              | Get file information             |
 | `GET`    | `/api/files/{id}/measurements/` | Get feature measurements         |
-| `DELETE` | `/api/files/{id}/`              | Delete a file and its data       |
 | `GET`    | `/health`                       | Health check                     |
 
 ---
@@ -181,33 +179,10 @@ curl -X POST http://localhost:8000/api/files/ \
 - `400` — Unsupported file type or empty file
 - `413` — File exceeds maximum size (50 MB default)
 
----
-
-### 2. List Files
-
-**`GET /api/files/`**
-
-**Response (200 OK):**
-```json
-[
-  {
-    "id": "a1b2c3d4e5f6",
-    "filename": "survey.kml",
-    "file_type": "kml",
-    "file_size_bytes": 15234,
-    "feature_count": 120,
-    "crs": "EPSG:4326",
-    "status": "COMPLETED",
-    "error_message": null,
-    "uploaded_at": "2024-01-15T10:30:00Z",
-    "processed_at": "2024-01-15T10:30:05Z"
-  }
-]
-```
 
 ---
 
-### 3. File Information
+### 2. File Information
 
 **`GET /api/files/{id}/`**
 
@@ -242,7 +217,7 @@ curl http://localhost:8000/api/files/a1b2c3d4e5f6/
 
 ---
 
-### 4. Get Measurements
+### 3. Get Measurements
 
 **`GET /api/files/{id}/measurements/`**
 
@@ -300,17 +275,6 @@ curl http://localhost:8000/api/files/a1b2c3d4e5f6/measurements/
 - `404` — File not found
 - `409` — File still processing or processing failed
 
----
-
-### 5. Delete File
-
-**`DELETE /api/files/{id}/`**
-
-```bash
-curl -X DELETE http://localhost:8000/api/files/a1b2c3d4e5f6/
-```
-
-**Response:** `204 No Content`
 
 ---
 

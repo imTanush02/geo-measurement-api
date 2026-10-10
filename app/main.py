@@ -105,9 +105,7 @@ async def root():
         "health": "/health",
         "endpoints": {
             "upload_file": "POST /api/files/",
-            "list_files": "GET /api/files/",
             "file_info": "GET /api/files/{id}/",
             "measurements": "GET /api/files/{id}/measurements/",
-            "delete_file": "DELETE /api/files/{id}/",
         },
     }

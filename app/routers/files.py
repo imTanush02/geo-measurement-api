@@ -3,10 +3,8 @@ File upload and measurement API router.
 
 Provides endpoints for:
     - POST   /api/files/                 → Upload a geospatial file
-    - GET    /api/files/                 → List all uploaded files
     - GET    /api/files/{id}/            → Get file information
     - GET    /api/files/{id}/measurements/ → Get feature measurements
-    - DELETE /api/files/{id}/            → Delete a file and its data
 """
 
 import logging
@@ -154,35 +152,6 @@ async def _process_file_task(file_id: str) -> None:
             logger.error(f"Background processing failed for {file_id}: {e}")
 
 
-@router.get(
-    "/",
-    response_model=list[FileInfoResponse],
-    summary="List all uploaded files",
-    description="Returns a list of all uploaded files with their processing status.",
-)
-async def list_files(db: AsyncSession = Depends(get_db)):
-    """List all uploaded geospatial files."""
-    result = await db.execute(
-        select(GeoFile).order_by(GeoFile.uploaded_at.desc())
-    )
-    files = result.scalars().all()
-
-    return [
-        FileInfoResponse(
-            id=f.id,
-            filename=f.original_filename,
-            file_type=f.file_type,
-            file_size_bytes=f.file_size_bytes,
-            feature_count=f.feature_count,
-            crs=f.crs,
-            status=f.status.value,
-            error_message=f.error_message,
-            uploaded_at=f.uploaded_at,
-            processed_at=f.processed_at,
-        )
-        for f in files
-    ]
-
 
 @router.get(
     "/{file_id}/",
@@ -280,31 +249,3 @@ async def get_measurements(file_id: str, db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.delete(
-    "/{file_id}/",
-    status_code=204,
-    summary="Delete a file",
-    description="Deletes an uploaded file and all associated data.",
-    responses={404: {"model": ErrorResponse}},
-)
-async def delete_file(file_id: str, db: AsyncSession = Depends(get_db)):
-    """Delete an uploaded file and its features."""
-    result = await db.execute(
-        select(GeoFile).where(GeoFile.id == file_id)
-    )
-    geo_file = result.scalar_one_or_none()
-
-    if not geo_file:
-        raise HTTPException(status_code=404, detail=f"File '{file_id}' not found.")
-
-    # Delete physical file
-    file_path = Path(geo_file.file_path)
-    if file_path.exists():
-        file_path.unlink()
-        logger.info(f"Deleted file: {file_path}")
-
-    # Delete database records (cascades to features)
-    await db.delete(geo_file)
-    await db.commit()
-
-    logger.info(f"Deleted file record: {file_id}")
