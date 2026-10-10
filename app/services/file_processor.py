@@ -1,9 +1,9 @@
 """
-File processing service.
+This is where the magic happens for file processing!
 
-Handles reading geospatial files (Shapefile and KML), extracting features,
-and orchestrating measurement calculations. Runs processing in a thread pool
-to avoid blocking the async event loop during I/O-heavy geospatial operations.
+We read the map files (like Shapefiles and KML), pull out all the shapes,
+and calculate their measurements. We do this in the background so our server
+doesn't freeze up while crunching numbers.
 """
 
 import logging
@@ -40,10 +40,8 @@ _executor = ThreadPoolExecutor(max_workers=4)
 
 def _sanitize_properties(properties: dict) -> dict:
     """
-    Sanitize feature properties for JSON serialization.
-
-    Converts non-serializable values (datetime, bytes, etc.) to strings
-    and maps NaN/NaT/Inf to None to prevent JSON encoding errors during API response serialization.
+    Cleans up the feature properties so we can safely convert them to JSON.
+    Things like dates or weird numbers get turned into text or nulls so they don't break anything.
     """
     sanitized = {}
     for key, value in properties.items():
@@ -60,26 +58,15 @@ def _sanitize_properties(properties: dict) -> dict:
 
 def _read_shapefile(file_path: Path) -> gpd.GeoDataFrame:
     """
-    Read a Shapefile from a ZIP archive.
-
-    Extracts the ZIP to a temporary directory, locates the .shp file,
-    and reads it using GeoPandas.
-
-    Args:
-        file_path: Path to the .zip file containing the Shapefile.
-
-    Returns:
-        GeoDataFrame with all features from the Shapefile.
-
-    Raises:
-        ValueError: If the ZIP does not contain a .shp file.
+    Opens up a zipped Shapefile and reads all the map data inside.
+    We unzip it to a temporary folder, find the .shp file, and let GeoPandas do its thing!
     """
     temp_dir = tempfile.mkdtemp(prefix="geo_shp_")
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
             zf.extractall(temp_dir)
 
-        # Find the .shp file (may be in a subdirectory)
+        # Let's hunt for that .shp file inside the zip...
         shp_files = list(Path(temp_dir).rglob("*.shp"))
         if not shp_files:
             raise ValueError(
@@ -96,15 +83,8 @@ def _read_shapefile(file_path: Path) -> gpd.GeoDataFrame:
 
 def _read_kml(file_path: Path) -> gpd.GeoDataFrame:
     """
-    Read a KML file into a GeoDataFrame.
-
-    Supports reading via PyOGRIO (default in GeoPandas 1.0+) or Fiona.
-
-    Args:
-        file_path: Path to the .kml file.
-
-    Returns:
-        GeoDataFrame with all features from the KML file.
+    Reads a KML file and turns it into a GeoDataFrame we can work with.
+    It tries the newest engine first, and falls back to an older one if needed.
     """
     if fiona is not None and hasattr(fiona, "drvsupport"):
         try:
@@ -122,22 +102,12 @@ def _read_kml(file_path: Path) -> gpd.GeoDataFrame:
 
 def _process_file_sync(geo_file_id: str, file_path: str, file_type: str) -> dict:
     """
-    Synchronous file processing function (runs in thread pool).
-
-    Reads the geospatial file, extracts features, calculates measurements,
-    and returns the results as a dictionary.
-
-    Args:
-        geo_file_id: Database ID of the GeoFile record.
-        file_path: Path to the uploaded file.
-        file_type: Type of file ("shapefile" or "kml").
-
-    Returns:
-        Dictionary with processing results including features and CRS.
+    This is the heavy-lifter function that actually processes the file.
+    It runs in our background thread pool.
     """
     path = Path(file_path)
 
-    # Read file based on type
+    # Figure out how to read it based on the file type
     if file_type == "shapefile":
         gdf = _read_shapefile(path)
     elif file_type == "kml":
@@ -145,10 +115,10 @@ def _process_file_sync(geo_file_id: str, file_path: str, file_type: str) -> dict
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
 
-    # Extract CRS
+    # Try to grab the CRS (Coordinate Reference System), default to standard GPS (EPSG:4326)
     source_crs = str(gdf.crs) if gdf.crs else "EPSG:4326"
 
-    # Normalize CRS string
+    # Let's try to get a nice clean EPSG code if possible
     if gdf.crs:
         try:
             epsg = gdf.crs.to_epsg()
@@ -159,11 +129,12 @@ def _process_file_sync(geo_file_id: str, file_path: str, file_type: str) -> dict
 
     logger.info(f"File CRS: {source_crs}, Features: {len(gdf)}")
 
-    # Process each feature
+    # Go through every single shape one by one
     features_data = []
     for idx, row in gdf.iterrows():
         geometry = row.geometry
 
+        # If the shape is missing or empty, just skip it and move on
         if geometry is None or geometry.is_empty:
             logger.warning(f"Feature {idx}: empty or null geometry, skipping.")
             continue
@@ -171,14 +142,14 @@ def _process_file_sync(geo_file_id: str, file_path: str, file_type: str) -> dict
         geometry_type = geometry.geom_type
         geometry_wkt_str = geometry.wkt
 
-        # Extract properties (all columns except geometry)
+        # Grab all the extra info (properties) attached to this shape
         props = {}
         for col in gdf.columns:
             if col != "geometry" and col != gdf.geometry.name:
                 props[col] = row[col]
         props = _sanitize_properties(props)
 
-        # Calculate measurements
+        # Let's calculate the area or length!
         measurement = calculate_measurement(geometry, geometry_type, source_crs)
 
         feature_data = {
@@ -203,24 +174,19 @@ def _process_file_sync(geo_file_id: str, file_path: str, file_type: str) -> dict
 
 async def process_file(geo_file: GeoFile, db: AsyncSession) -> None:
     """
-    Process an uploaded geospatial file asynchronously.
-
-    Updates the GeoFile status, runs the processing in a thread pool,
-    creates Feature records in the database, and updates the final status.
-
-    Args:
-        geo_file: The GeoFile ORM instance to process.
-        db: Async database session.
+    Kicks off the file processing asynchronously.
+    It updates the file's status in the database, runs the heavy lifting in the background,
+    and then saves all the results when it's done.
     """
     import asyncio
 
-    # Update status to PROCESSING
+    # Let everyone know we're working on it
     geo_file.status = FileStatus.PROCESSING
     db.add(geo_file)
     await db.commit()
 
     try:
-        # Run CPU/IO-bound processing in thread pool
+        # Send the heavy work to our background thread pool so we don't block the main app
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             _executor,
@@ -230,7 +196,7 @@ async def process_file(geo_file: GeoFile, db: AsyncSession) -> None:
             geo_file.file_type,
         )
 
-        # Create Feature records
+        # Save all the shapes we found into the database
         for feat_data in result["features"]:
             feature = Feature(
                 file_id=geo_file.id,
@@ -238,7 +204,7 @@ async def process_file(geo_file: GeoFile, db: AsyncSession) -> None:
             )
             db.add(feature)
 
-        # Update GeoFile with results
+        # We did it! Update the file with the final counts and mark it complete
         geo_file.crs = result["crs"]
         geo_file.feature_count = result["feature_count"]
         geo_file.status = FileStatus.COMPLETED
@@ -253,6 +219,7 @@ async def process_file(geo_file: GeoFile, db: AsyncSession) -> None:
         )
 
     except Exception as e:
+        # Uh oh, something went horribly wrong. Log it and mark as failed.
         geo_file.status = FileStatus.FAILED
         geo_file.error_message = str(e)
         geo_file.processed_at = datetime.now(timezone.utc)

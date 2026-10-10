@@ -1,10 +1,10 @@
 """
-File upload and measurement API router.
+Hey there! This is the main router for handling our files.
 
-Provides endpoints for:
-    - POST   /api/files/                 → Upload a geospatial file
-    - GET    /api/files/{id}/            → Get file information
-    - GET    /api/files/{id}/measurements/ → Get feature measurements
+It gives us endpoints to:
+    - POST   /api/files/                 → Upload a map file
+    - GET    /api/files/{id}/            → Check out file details
+    - GET    /api/files/{id}/measurements/ → See the actual map measurements
 """
 
 import logging
@@ -34,16 +34,8 @@ router = APIRouter(prefix="/api/files", tags=["Files"])
 
 def _detect_file_type(filename: str) -> str:
     """
-    Detect the geospatial file type from the filename extension.
-
-    Args:
-        filename: Original filename of the uploaded file.
-
-    Returns:
-        File type string ("shapefile" or "kml").
-
-    Raises:
-        HTTPException: If the file extension is not supported.
+    Let's figure out what kind of file this is based on its name.
+    We just check the extension and see if it's something we support!
     """
     ext = Path(filename).suffix.lower()
     if ext == ".zip":
@@ -75,41 +67,43 @@ async def upload_file(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Upload and process a geospatial file.
+    Time to upload and process a file!
 
-    The file is validated, saved to disk, and a background task is started
-    to extract features and calculate measurements.
+    We'll check if the file is okay, save it safely on the disk, 
+    and then tell a background worker to go read the map data so we don't keep the user waiting.
     """
-    # Validate filename
+    # Did they even give us a name?
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
 
-    # Detect file type
+    # What kind of file is it?
     file_type = _detect_file_type(file.filename)
 
-    # Read file content
+    # Read all the bytes
     content = await file.read()
 
-    # Validate file size
+    # Is it too big? Let's not crash our server.
     if len(content) > settings.max_upload_size_bytes:
         raise HTTPException(
             status_code=413,
             detail=f"File exceeds maximum size of {settings.MAX_UPLOAD_SIZE_MB} MB.",
         )
 
+    # Oops, the file is empty!
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-    # Generate unique ID and save file
+    # Make a unique ID so files with the same name don't overwrite each other
     file_id = generate_uuid()
     clean_filename = Path(file.filename).name
     safe_filename = f"{file_id}_{clean_filename}"
     save_path = settings.upload_path / safe_filename
 
+    # Save it to the disk
     save_path.write_bytes(content)
     logger.info(f"File saved: {save_path} ({len(content)} bytes)")
 
-    # Create database record
+    # Keep track of this file in our database
     geo_file = GeoFile(
         id=file_id,
         filename=safe_filename,
@@ -123,7 +117,7 @@ async def upload_file(
     await db.commit()
     await db.refresh(geo_file)
 
-    # Start background processing
+    # Tell the background worker to start doing the heavy lifting
     background_tasks.add_task(_process_file_task, file_id)
 
     return FileUploadResponse(
@@ -137,7 +131,7 @@ async def upload_file(
 
 
 async def _process_file_task(file_id: str) -> None:
-    """Background task wrapper for file processing."""
+    """A little helper to run our heavy file processing in the background."""
     from app.database import async_session
 
     async with async_session() as db:
@@ -162,7 +156,7 @@ async def _process_file_task(file_id: str) -> None:
     responses={404: {"model": ErrorResponse}},
 )
 async def get_file_info(file_id: str, db: AsyncSession = Depends(get_db)):
-    """Get information about a specific uploaded file."""
+    """Grab the details about a file we already uploaded."""
     result = await db.execute(
         select(GeoFile).where(GeoFile.id == file_id)
     )
@@ -197,7 +191,7 @@ async def get_file_info(file_id: str, db: AsyncSession = Depends(get_db)):
     },
 )
 async def get_measurements(file_id: str, db: AsyncSession = Depends(get_db)):
-    """Get measurements for all features in a file."""
+    """Get all the calculated measurements for the shapes in this file."""
     result = await db.execute(
         select(GeoFile).where(GeoFile.id == file_id)
     )
@@ -206,6 +200,7 @@ async def get_measurements(file_id: str, db: AsyncSession = Depends(get_db)):
     if not geo_file:
         raise HTTPException(status_code=404, detail=f"File '{file_id}' not found.")
 
+    # Wait, is the file still cooking?
     if geo_file.status == FileStatus.PENDING or geo_file.status == FileStatus.PROCESSING:
         raise HTTPException(
             status_code=409,
@@ -213,13 +208,14 @@ async def get_measurements(file_id: str, db: AsyncSession = Depends(get_db)):
             "Please try again later.",
         )
 
+    # Oh no, something broke while processing
     if geo_file.status == FileStatus.FAILED:
         raise HTTPException(
             status_code=409,
             detail=f"File processing failed: {geo_file.error_message}",
         )
 
-    # Fetch features
+    # Let's grab all the features from the database
     features_result = await db.execute(
         select(Feature)
         .where(Feature.file_id == file_id)
