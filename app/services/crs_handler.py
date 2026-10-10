@@ -117,4 +117,7 @@ def transform_geometry(geometry, source_crs_str: str, target_crs_str: str):
         source_crs, target_crs, always_xy=True
     )
 
-    return transform(transformer.transform, geometry)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        return transform(transformer.transform, geometry)

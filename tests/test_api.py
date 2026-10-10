@@ -332,3 +332,168 @@ class TestMeasurementsEndpoint:
         """Requesting measurements for non-existent file should return 404."""
         response = await client.get("/api/files/nonexistent/measurements/")
         assert response.status_code == 404
+
+
+class TestEndToEndProcessing:
+    """End-to-end integration tests for upload, processing, and measurements."""
+
+    @pytest.mark.asyncio
+    async def test_e2e_kml_processing_and_measurements(self, client):
+        """Uploading KML processes features and computes correct measurements."""
+        import asyncio
+
+        kml_content = _create_test_kml([
+            {
+                "name": "Field A",
+                "type": "Polygon",
+                "coordinates": "77.0,28.0,0 77.01,28.0,0 77.01,28.01,0 77.0,28.01,0 77.0,28.0,0",
+            },
+            {
+                "name": "Road B",
+                "type": "LineString",
+                "coordinates": "77.0,28.0,0 77.01,28.0,0",
+            },
+            {
+                "name": "Tower C",
+                "type": "Point",
+                "coordinates": "77.0,28.0,0",
+            },
+        ])
+
+        # 1. Upload KML
+        response = await client.post(
+            "/api/files/",
+            files={"file": ("survey_delhi.kml", kml_content, "application/vnd.google-earth.kml+xml")},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        file_id = data["id"]
+
+        # 2. Poll until background processing completes
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            info_res = await client.get(f"/api/files/{file_id}/")
+            info_data = info_res.json()
+            if info_data["status"] in ("COMPLETED", "FAILED"):
+                break
+
+        assert info_data["status"] == "COMPLETED"
+        assert info_data["feature_count"] == 3
+        assert info_data["crs"] == "EPSG:4326"
+
+        # 3. Retrieve measurements
+        meas_res = await client.get(f"/api/files/{file_id}/measurements/")
+        assert meas_res.status_code == 200
+        meas_data = meas_res.json()
+        assert meas_data["feature_count"] == 3
+        assert len(meas_data["features"]) == 3
+
+        # Feature 0: Polygon -> area > 0, length is None
+        feat0 = meas_data["features"][0]
+        assert feat0["geometry_type"] == "Polygon"
+        assert feat0["area_sq_meters"] is not None
+        assert feat0["area_sq_meters"] > 0
+        assert feat0["length_meters"] is None
+        assert feat0["projected_crs"] == "EPSG:32643"
+
+        # Feature 1: LineString -> length > 0, area is None
+        feat1 = meas_data["features"][1]
+        assert feat1["geometry_type"] == "LineString"
+        assert feat1["length_meters"] is not None
+        assert feat1["length_meters"] > 0
+        assert feat1["area_sq_meters"] is None
+        assert feat1["projected_crs"] == "EPSG:32643"
+
+        # Feature 2: Point -> area is None, length is None
+        feat2 = meas_data["features"][2]
+        assert feat2["geometry_type"] == "Point"
+        assert feat2["area_sq_meters"] is None
+        assert feat2["length_meters"] is None
+
+    @pytest.mark.asyncio
+    async def test_e2e_shapefile_processing_and_measurements(self, client):
+        """Uploading Shapefile ZIP processes features and computes correct measurements."""
+        import asyncio
+
+        zip_content = _create_test_shapefile_zip()
+
+        # 1. Upload Shapefile
+        response = await client.post(
+            "/api/files/",
+            files={"file": ("shapefile_test.zip", zip_content, "application/zip")},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        file_id = data["id"]
+
+        # 2. Poll until completed
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            info_res = await client.get(f"/api/files/{file_id}/")
+            info_data = info_res.json()
+            if info_data["status"] in ("COMPLETED", "FAILED"):
+                break
+
+        assert info_data["status"] == "COMPLETED"
+        assert info_data["feature_count"] == 1
+
+        # 3. Check measurements
+        meas_res = await client.get(f"/api/files/{file_id}/measurements/")
+        assert meas_res.status_code == 200
+        meas_data = meas_res.json()
+        assert len(meas_data["features"]) == 1
+        assert meas_data["features"][0]["area_sq_meters"] is not None
+        assert meas_data["features"][0]["area_sq_meters"] > 0
+
+    @pytest.mark.asyncio
+    async def test_delete_file(self, client):
+        """DELETE /api/files/{id}/ removes file and cascades to features."""
+        import asyncio
+
+        kml_content = _create_test_kml([
+            {"name": "Delete Me", "type": "Point", "coordinates": "77.0,28.0,0"}
+        ])
+        upload_res = await client.post(
+            "/api/files/",
+            files={"file": ("to_delete.kml", kml_content, "application/vnd.google-earth.kml+xml")},
+        )
+        file_id = upload_res.json()["id"]
+
+        # Wait for processing
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            if (await client.get(f"/api/files/{file_id}/")).json()["status"] in ("COMPLETED", "FAILED"):
+                break
+
+        # Delete file
+        del_res = await client.delete(f"/api/files/{file_id}/")
+        assert del_res.status_code == 204
+
+        # Confirm 404
+        get_res = await client.get(f"/api/files/{file_id}/")
+        assert get_res.status_code == 404
+        meas_res = await client.get(f"/api/files/{file_id}/measurements/")
+        assert meas_res.status_code == 404
+
+
+class TestAdditionalGeometryCalculations:
+    """Tests for MultiPolygon, MultiLineString, and invalid geometries."""
+
+    def test_multipolygon_area(self):
+        """MultiPolygon area should be calculated as sum of polygon areas."""
+        p1 = Polygon([(77.0, 28.0), (77.01, 28.0), (77.01, 28.01), (77.0, 28.01), (77.0, 28.0)])
+        p2 = Polygon([(77.02, 28.02), (77.03, 28.02), (77.03, 28.03), (77.02, 28.03), (77.02, 28.02)])
+        mp = MultiPolygon([p1, p2])
+
+        result = calculate_measurement(mp, "MultiPolygon", "EPSG:4326")
+        assert result.area_sq_meters is not None
+        assert result.area_sq_meters > 1_000_000
+        assert result.error is None
+
+    def test_invalid_polygon_handled_gracefully(self):
+        """Self-intersecting polygon should be auto-repaired and measured."""
+        # Bow-tie polygon (self-intersecting)
+        bowtie = Polygon([(0, 0), (0, 2), (2, 0), (2, 2), (0, 0)])
+        result = calculate_measurement(bowtie, "Polygon", "EPSG:4326")
+        assert result.area_sq_meters is not None
+        assert result.error is None

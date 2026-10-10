@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Delhi Region Survey</name>
+    <description>Sample geospatial survey containing polygon, linestring, and point features.</description>
+    <Placemark>
+      <name>Agricultural Plot Alpha</name>
+      <description>Surveyed agricultural parcel</description>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              77.2090,28.6139,0
+              77.2190,28.6139,0
+              77.2190,28.6239,0
+              77.2090,28.6239,0
+              77.2090,28.6139,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+    <Placemark>
+      <name>Main Access Road</name>
+      <description>Access road connecting to highway</description>
+      <LineString>
+        <coordinates>
+          77.2090,28.6139,0
+          77.2190,28.6139,0
+          77.2250,28.6200,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+    <Placemark>
+      <name>Survey Benchmark Station</name>
+      <description>Geodetic reference point</description>
+      <Point>
+        <coordinates>77.2090,28.6139,0</coordinates>
+      </Point>
+    </Placemark>
+  </Document>
+</kml>

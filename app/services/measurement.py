@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 AREA_TYPES = {"Polygon", "MultiPolygon"}
 
 # Geometry types that support length calculation
-LENGTH_TYPES = {"LineString", "MultiLineString"}
+LENGTH_TYPES = {"LineString", "MultiLineString", "LinearRing"}
 
 # Geometry types that require no measurement
 NO_MEASUREMENT_TYPES = {"Point", "MultiPoint"}
@@ -82,6 +82,13 @@ def calculate_measurement(
         return result
 
     try:
+        import shapely
+        if hasattr(geometry, "is_valid") and not geometry.is_valid:
+            try:
+                geometry = shapely.make_valid(geometry)
+            except Exception:
+                pass
+
         # Determine projected CRS and transform geometry
         projected_crs_str, projected_crs = get_projected_crs_for_geometry(
             geometry, source_crs

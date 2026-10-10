@@ -24,7 +24,9 @@ env/
 
 # Uploads & Database
 uploads/
+test_uploads/
 *.db
+.pytest_cache/
 
 # OS
 .DS_Store

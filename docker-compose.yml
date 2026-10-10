@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: geo-measurement-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./sample_data:/app/sample_data
+    environment:
+      - APP_NAME=Geospatial File Measurement API
+      - DATABASE_URL=sqlite+aiosqlite:///./geo_measurement.db
+      - UPLOAD_DIR=./uploads
+      - MAX_UPLOAD_SIZE_MB=50
+    restart: unless-stopped

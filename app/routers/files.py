@@ -104,7 +104,8 @@ async def upload_file(
 
     # Generate unique ID and save file
     file_id = generate_uuid()
-    safe_filename = f"{file_id}_{file.filename}"
+    clean_filename = Path(file.filename).name
+    safe_filename = f"{file_id}_{clean_filename}"
     save_path = settings.upload_path / safe_filename
 
     save_path.write_bytes(content)

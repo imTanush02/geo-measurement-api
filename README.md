@@ -42,45 +42,23 @@ A production-quality backend API built with **FastAPI** that accepts geospatial 
 ### Prerequisites
 
 - **Python 3.11+**
-- **pip** (Python package manager)
-- **GDAL** (required by geopandas/fiona — see platform-specific notes below)
+- **pip** (Python package manager) or **Docker**
 
-### GDAL Installation
+### Quick Start with Docker (Recommended)
 
-<details>
-<summary><strong>Windows</strong></summary>
-
-Option 1: Install via conda:
-```bash
-conda install -c conda-forge gdal fiona geopandas
-```
-
-Option 2: Download pre-built wheels from [Christoph Gohlke's site](https://www.lfd.uci.edu/~gohlke/pythonlibs/) for GDAL and Fiona, then:
-```bash
-pip install GDAL‑x.x.x‑cpXX‑cpXX‑win_amd64.whl
-pip install fiona‑x.x.x‑cpXX‑cpXX‑win_amd64.whl
-```
-</details>
-
-<details>
-<summary><strong>macOS</strong></summary>
+Run the application and all dependencies with a single command:
 
 ```bash
-brew install gdal
+docker compose up --build
 ```
-</details>
 
-<details>
-<summary><strong>Ubuntu/Debian</strong></summary>
+The API will be available at [http://localhost:8000](http://localhost:8000). Interactive Swagger docs at [http://localhost:8000/docs](http://localhost:8000/docs).
 
-```bash
-sudo apt-get install gdal-bin libgdal-dev
-export CPLUS_INCLUDE_PATH=/usr/include/gdal
-export C_INCLUDE_PATH=/usr/include/gdal
-```
-</details>
+---
 
-### Installation
+### Local Installation
+
+The project uses **PyOGRIO** as the vector geospatial engine for GeoPandas. Unlike older setups that required manual GDAL C-library and Fiona compilation on Windows, PyOGRIO comes with pre-compiled wheels bundling GDAL drivers (including KML and Shapefile) across Windows, macOS, and Linux.
 
 1. **Clone the repository**
    ```bash
@@ -119,6 +97,32 @@ export C_INCLUDE_PATH=/usr/include/gdal
    - Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
    - ReDoc: [http://localhost:8000/redoc](http://localhost:8000/redoc)
    - Health Check: [http://localhost:8000/health](http://localhost:8000/health)
+
+---
+
+### Sample Datasets
+
+Ready-to-use sample files are provided in [`sample_data/`](sample_data/) for quick testing:
+
+- **[`sample_data/sample_delhi.kml`](sample_data/sample_delhi.kml)**: KML file containing a Polygon (farm plot), LineString (boundary road), and Point (benchmark station) in Delhi (UTM Zone 43N).
+- **[`sample_data/sample_parcels.zip`](sample_data/sample_parcels.zip)**: Shapefile ZIP archive containing cadastral parcels (Polygons) with attributes.
+- **[`sample_data/sample_roads.zip`](sample_data/sample_roads.zip)**: Shapefile ZIP archive containing road alignments (LineStrings) with attributes.
+
+You can upload any of these directly via the Swagger UI at `/docs` or via `curl`:
+
+```bash
+# Upload sample KML
+curl -X POST "http://localhost:8000/api/files/" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@sample_data/sample_delhi.kml"
+
+# Upload sample Shapefile ZIP
+curl -X POST "http://localhost:8000/api/files/" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@sample_data/sample_parcels.zip"
+```
 
 ---
 
@@ -523,28 +527,32 @@ pytest --cov=app --cov-report=term-missing -v
 
 ### Test Structure
 
-| Test Class              | Scope       | What's Tested                                    |
-|-------------------------|-------------|--------------------------------------------------|
-| `TestCRSHandler`        | Unit        | UTM zone detection, polar regions, CRS projection |
-| `TestMeasurements`      | Unit        | Area, length, point, unsupported types            |
-| `TestHealthEndpoint`    | Integration | Health check, root endpoint                       |
-| `TestFileUpload`        | Integration | KML upload, Shapefile upload, validation          |
-| `TestFileInfo`          | Integration | File retrieval, 404 handling                      |
-| `TestMeasurementsEndpoint`| Integration | Measurement retrieval, 404 handling             |
+| Test Class                         | Scope       | What's Tested                                    |
+|------------------------------------|-------------|--------------------------------------------------|
+| `TestCRSHandler`                   | Unit        | UTM zone detection, polar regions, CRS projection |
+| `TestMeasurements`                 | Unit        | Area, length, point, unsupported types           |
+| `TestHealthEndpoint`               | Integration | Health check, root endpoint                      |
+| `TestFileUpload`                   | Integration | KML upload, Shapefile upload, validation         |
+| `TestFileInfo`                     | Integration | File retrieval, 404 handling                     |
+| `TestMeasurementsEndpoint`         | Integration | Measurement retrieval, 404 handling            |
+| `TestEndToEndProcessing`           | E2E         | Complete upload -> background processing -> measurement pipeline for KML & Shapefile, deletion |
+| `TestAdditionalGeometryCalculations`| Unit        | MultiPolygon area, MultiLineString, auto-repairing invalid geometries |
 
 ---
 
 ## Learnings
 
-1. **CRS matters more than you think**: Directly calculating area on EPSG:4326 coordinates gives results in "square degrees" — a meaningless unit. The UTM auto-detection strategy was critical for producing correct, real-world measurements.
+1. **CRS matters more than you think**: Directly calculating area on EPSG:4326 coordinates gives results in "square degrees" — a physically meaningless unit. The UTM auto-detection strategy from geometry centroid is critical for producing accurate, real-world metric measurements (m² and m).
 
-2. **Fiona's KML driver**: KML support in Fiona requires explicit driver registration (`fiona.drvsupport.supported_drivers["KML"] = "r"`). This isn't well-documented and required investigation.
+2. **Cross-Platform Vector Drivers (PyOGRIO vs Fiona)**: Older geospatial Python stacks relied heavily on Fiona, which requires native C headers and manual GDAL builds on Windows. Adopting PyOGRIO (the default engine in GeoPandas 1.0+) provides pre-compiled wheels with bundled GDAL drivers (including KML and Shapefile) across Windows, Linux, and macOS, while still supporting Fiona as a fallback.
 
-3. **Async + Geospatial**: GeoPandas and Fiona are synchronous, CPU/IO-bound libraries. Running them directly in an async handler blocks the event loop. Wrapping them in `run_in_executor` was essential for maintaining API responsiveness.
+3. **SQLAlchemy 2.0 Asyncio with Greenlet**: When running SQLite async engines via `aiosqlite`, SQLAlchemy requires `greenlet` for asynchronous context switching. Ensuring `greenlet` is explicitly tracked in dependencies prevents silent import errors in fresh environments.
 
-4. **Property sanitization**: Geospatial file attributes can contain Python objects (datetime, Decimal) that aren't JSON-serializable. A sanitization step before database storage prevents subtle serialization errors.
+4. **Async + Geospatial Execution**: GeoPandas, PyOGRIO, and Shapely are synchronous, CPU/IO-bound libraries. Running them directly in an async handler would freeze FastAPI's event loop. Delegating file parsing and geometric reprojections to a `ThreadPoolExecutor` via `run_in_executor` keeps the API fully responsive.
 
-5. **Shapefile ZIP handling**: Shapefiles consist of multiple mandatory files (.shp, .shx, .dbf, .prj). Robust extraction requires recursive search within the ZIP since users may nest files in subdirectories.
+5. **Property Sanitization & Serialization**: Geospatial attribute tables frequently contain pandas `NaT` (Not a Time), `NaN`, `Infinity`, or raw dates that violate standard RFC 8259 JSON serialization. A robust sanitization layer mapping missing values to `null` prevents serialization crashes.
+
+6. **Self-Intersecting & Complex Geometries**: Real-world GIS data often contains invalid rings or self-intersecting polygons (e.g. bow-tie polygons). Integrating `shapely.make_valid()` ensures the calculation engine auto-repairs geometries without throwing errors.
 
 ---
 
@@ -554,7 +562,7 @@ pytest --cov=app --cov-report=term-missing -v
 
 2. **PostGIS Integration**: Replace SQLite with PostgreSQL + PostGIS for native spatial indexing, spatial queries (intersection, containment), and better geometry storage.
 
-3. **Celery Task Queue**: Replace `BackgroundTasks` with Celery + Redis for production-scale concurrent processing, retry mechanisms, and task monitoring.
+3. **Celery Task Queue**: Replace `BackgroundTasks` with Celery + Redis for production-scale distributed processing, retry mechanisms, and task monitoring.
 
 4. **Streaming Large Files**: Implement chunked upload for files > 100 MB to reduce memory pressure.
 
@@ -564,7 +572,7 @@ pytest --cov=app --cov-report=term-missing -v
 
 7. **Geodesic Calculations**: Use `pyproj.Geod` for geodesic area/distance as an alternative to UTM projection, especially for geometries spanning multiple UTM zones.
 
-8. **Docker Deployment**: Add `Dockerfile` and `docker-compose.yml` for containerized deployment with proper GDAL dependencies.
+8. **Docker Deployment**: Docker containerization is included via `Dockerfile` and `docker-compose.yml` for multi-platform deployment.
 
 9. **API Authentication**: Add JWT-based authentication and per-user file isolation.
 

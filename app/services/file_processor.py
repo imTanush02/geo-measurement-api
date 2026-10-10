@@ -11,11 +11,17 @@ import zipfile
 import tempfile
 import shutil
 from pathlib import Path
+import math
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 import geopandas as gpd
-import fiona
+try:
+    import fiona
+    if hasattr(fiona, "drvsupport"):
+        fiona.drvsupport.supported_drivers["KML"] = "r"
+except (ImportError, AttributeError):
+    fiona = None
 from shapely.geometry import shape, mapping
 from shapely import wkt
 
@@ -26,6 +32,8 @@ from app.services.measurement import calculate_measurement
 
 logger = logging.getLogger(__name__)
 
+import pandas as pd
+
 # Thread pool for CPU/IO-bound geospatial operations
 _executor = ThreadPoolExecutor(max_workers=4)
 
@@ -35,11 +43,11 @@ def _sanitize_properties(properties: dict) -> dict:
     Sanitize feature properties for JSON serialization.
 
     Converts non-serializable values (datetime, bytes, etc.) to strings
-    to prevent JSON encoding errors during API response serialization.
+    and maps NaN/NaT/Inf to None to prevent JSON encoding errors during API response serialization.
     """
     sanitized = {}
     for key, value in properties.items():
-        if value is None:
+        if value is None or pd.isna(value) or (isinstance(value, float) and math.isinf(value)):
             sanitized[key] = None
         elif isinstance(value, (str, int, float, bool)):
             sanitized[key] = value
@@ -88,9 +96,9 @@ def _read_shapefile(file_path: Path) -> gpd.GeoDataFrame:
 
 def _read_kml(file_path: Path) -> gpd.GeoDataFrame:
     """
-    Read a KML file using Fiona's KML driver.
+    Read a KML file into a GeoDataFrame.
 
-    Enables the KML driver in Fiona and reads the file into a GeoDataFrame.
+    Supports reading via PyOGRIO (default in GeoPandas 1.0+) or Fiona.
 
     Args:
         file_path: Path to the .kml file.
@@ -98,12 +106,18 @@ def _read_kml(file_path: Path) -> gpd.GeoDataFrame:
     Returns:
         GeoDataFrame with all features from the KML file.
     """
-    # Enable KML driver in Fiona
-    fiona.drvsupport.supported_drivers["KML"] = "r"
+    if fiona is not None and hasattr(fiona, "drvsupport"):
+        try:
+            fiona.drvsupport.supported_drivers["KML"] = "r"
+        except Exception:
+            pass
 
     logger.info(f"Reading KML file: {file_path.name}")
-    gdf = gpd.read_file(str(file_path), driver="KML")
-    return gdf
+    try:
+        return gpd.read_file(str(file_path))
+    except Exception as e:
+        logger.warning(f"Default engine failed for KML, attempting driver='KML': {e}")
+        return gpd.read_file(str(file_path), driver="KML")
 
 
 def _process_file_sync(geo_file_id: str, file_path: str, file_type: str) -> dict:
@@ -207,7 +221,7 @@ async def process_file(geo_file: GeoFile, db: AsyncSession) -> None:
 
     try:
         # Run CPU/IO-bound processing in thread pool
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             _executor,
             _process_file_sync,
